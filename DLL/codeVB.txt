@@ -1,0 +1,266 @@
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+  Persistable = 0  'NotPersistable
+  DataBindingBehavior = 0  'vbNone
+  DataSourceBehavior  = 0  'vbNone
+  MTSTransactionMode  = 0  'NotAnMTSObject
+END
+Attribute VB_Name = "SurveyDataBase"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = True
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Option Explicit
+Option Base 0
+Option Compare Binary
+
+
+'''<summary>Class For Data Operations for oxWebCATI</summary>
+'''<version>1.0.0</version>
+'''<author>Oguz Ozgul</author>
+'''<date>2004-11-09</date>
+'''<updates>
+''' <update uniqueID="" date="" author="" />
+'''</updates>
+
+
+
+'''<summary>Creates the database for given project name</summary>
+'''<parameters>
+'''<param name="surveyName">The name of the survey to be created</param>
+Public Function createSurveyDatabase(ByVal surveyName As String, ByVal extraFields As String) As Long
+
+    On Error GoTo ExceptionHandler
+    
+    Dim exception As Boolean
+    Dim mdbCreator As New DAO.DBEngine
+    Dim fsControl As New Scripting.FileSystemObject
+    Dim extraFieldCommands() As String
+    
+    Dim strSurveyPath As String: strSurveyPath = getConfig("Root")
+    
+    Dim strTargetPath As String: strTargetPath = strSurveyPath & "\" & SURVEYS_FOLDER_NAME & "\" & surveyName
+    
+    Dim surveyFolderCreated As Boolean
+    ' Create the survey main folder if it does not exists
+    If Not fsControl.FolderExists(strTargetPath) Then
+        Call fsControl.CreateFolder(strTargetPath)
+        surveyFolderCreated = True
+    End If
+    
+    If Not fsControl.FolderExists(strTargetPath & "\Log") Then
+        Call fsControl.CreateFolder(strTargetPath & "\Log")
+    End If
+    
+    Dim surveyDB As DAO.Database
+    
+    Dim surveyDatabaseCreated As Boolean
+    ' Check if database exists
+    If Not fsControl.FileExists(strTargetPath & "\" & SURVEY_DATABASE_NAME) Then
+        ' Create a DAO 3.0 compatible database
+        Set surveyDB = DAO.CreateDatabase(strTargetPath & "\" & SURVEY_DATABASE_NAME, DAO.LanguageConstants.dbLangTurkish, DAO.DatabaseTypeEnum.dbVersion40)
+        surveyDatabaseCreated = True
+        Call addDefaultTables(surveyDB)
+        extraFieldCommands = DeSerializeFieldInfosAndCreateTable(surveyDB, "tblExtraData", extraFields)
+    Else
+        createSurveyDatabase = 10001 ' Database Exists
+    End If
+    
+'    Dim strRegistryKeys As String
+'    strRegistryKeys = "DBQ=" & strTargetPath & "\" & SURVEY_DATABASE_NAME & vbCrLf & _
+                      "Description=oxWebCATI System DSN For " & surveyName + " Project"
+                      
+'    ' Create a new User DSN for the project database
+'    Call DAO.RegisterDatabase(SURVEY_DSN_PREFIX & surveyName, DATA_SOURCE_DRIVER, True, strRegistryKeys)
+    
+    logEntry surveyName, "The survey database has been created", LOG_TYPE_INFORMATION
+    
+    createSurveyDatabase = 0 ' Success
+    
+    Set surveyDB = Nothing
+    
+    ' Add extra field info to the database
+    
+    Dim cnn As ADODB.Connection
+    Dim rootPath As String
+    Dim commandIndex As Long
+    
+    
+    
+    If LenB(extraFields) > 0 Then
+        Set cnn = New ADODB.Connection
+        rootPath = modConfig.getConfig("Root")
+        cnn.Open "Driver=Microsoft Access Driver (*.mdb);DBQ=" & rootPath & "\surveyData\" & surveyName & "\surveyData.mdb"
+        For commandIndex = 0 To UBound(extraFieldCommands)
+            Call cnn.Execute(extraFieldCommands(commandIndex))
+    
+        Next commandIndex
+        cnn.Close
+        Set cnn = Nothing
+    End If
+    
+    
+    
+DeAllocate:
+    
+    On Error Resume Next
+    
+    If Not mdbCreator Is Nothing Then Set mdbCreator = Nothing
+    If Not surveyDB Is Nothing Then Set surveyDB = Nothing
+    
+    If exception Then
+        ' RollBack actions
+        If surveyDatabaseCreated Then
+            fsControl.DeleteFile strTargetPath & "\" & SURVEY_DATABASE_NAME
+        End If
+        
+        If surveyFolderCreated Then
+            fsControl.DeleteFolder strTargetPath
+        End If
+    End If
+    
+    If Not fsControl Is Nothing Then Set fsControl = Nothing
+    
+    Exit Function
+
+ExceptionHandler:
+    
+    modLogger.eventLogEntry "SurveyData", "createSurveyDatabase", Erl, Err.Number, Err.Source, Err.Description, "The Database Create Request for survey " & surveyName & " has failed and the rollback operation is performed"
+    
+    createSurveyDatabase = 10002 ' Database could not be created
+    exception = True
+    Resume DeAllocate
+
+End Function
+
+Private Function addDefaultTables(ByRef surveyDB As DAO.Database) As Long
+    
+    
+    ' This table
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_INTERVIEWEES, _
+                     Array(FIELD_NAME_INTERVIEWEE_ID, FIELD_NAME_INTERVIEWEE_NAME, FIELD_NAME_PHONE_1, FIELD_NAME_PHONE_2, FIELD_NAME_PHONE_3, FIELD_NAME_IS_CHECKED_OUT, FIELD_NAME_RECORD_STATUS, FIELD_NAME_LAST_ACCESSED_DATE, FIELD_NAME_LAST_ACCESSED_BY, FIELD_NAME_RENDEZVOUS_DATE), _
+                     Array(dbLong, dbText, dbText, dbText, dbText, dbBoolean, dbInteger, dbText, dbText, dbText), _
+                     Array(0, 64, 12, 12, 12, 0, 0, 16, 32, 16), _
+                     Array(False, False, False, True, True, False, False, False, False, False), _
+                     Array(True, True, True, False, False, True, True, False, False, False), _
+                     FIELD_NAME_INTERVIEWEE_ID)
+                     
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_SURVEY_RECORDS, _
+                     Array(FIELD_NAME_INTERVIEWEE_ID, FIELD_NAME_RECORD_DATA), _
+                     Array(dbLong, dbMemo), _
+                     Array(0, 0), _
+                     Array(False, True), _
+                     Array(True, True), _
+                     "")
+    
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_OPEN_ANSWERS, _
+                     Array(FIELD_NAME_INTERVIEWEE_ID, FIELD_NAME_QUESTION_ID, FIELD_NAME_OPEN_ANSWER, FIELD_NAME_IS_CODED, FIELD_NAME_CODED_AS, FIELD_NAME_LAST_CODING_BY, FIELD_NAME_LAST_CODING_DATE), _
+                     Array(dbLong, dbText, dbMemo, dbBoolean, dbText, dbText, dbText), _
+                     Array(0, 8, 0, 0, 64, 32, 16), _
+                     Array(False, False, False, False, True, True, True), _
+                     Array(True, True, True, True, False, False, False), _
+                     "")
+    
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_CODINGS, _
+                     Array(FIELD_NAME_QUESTION_ID, FIELD_NAME_CODE_KEY, FIELD_NAME_CODE_VALUE, FIELD_NAME_CREATED_BY), _
+                     Array(dbText, dbText, dbText, dbText), _
+                     Array(8, 8, 128, 32), _
+                     Array(False, False, False, False), _
+                     Array(True, True, True, True), _
+                     "")
+    
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_QOUTAS, _
+                     Array(FIELD_NAME_QOUTA_ID, FIELD_NAME_QOUTA_KEY, FIELD_NAME_QOUTA_DESCRIPTION, FIELD_NAME_QOUTA_TARGET, FIELD_NAME_QOUTA_CURRENT), _
+                     Array(dbLong, dbText, dbText, dbLong, dbLong), _
+                     Array(0, 32, 128, 0, 0), _
+                     Array(False, False, False, False, False), _
+                     Array(True, True, True, True, True), _
+                     FIELD_NAME_QOUTA_ID)
+
+    
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_INTERVIEWEE_ACCESS, _
+                     Array(FIELD_NAME_INTERVIEWEE_ID, FIELD_NAME_ACCESSED_BY, FIELD_NAME_ACCESSED_DATE, FIELD_NAME_PREVIOUS_REC_STATUS, FIELD_NAME_RESULT_REC_STATUS, FIELD_NAME_CALL_DESCRIPTION), _
+                     Array(dbLong, dbText, dbLong, dbLong, dbLong, dbText), _
+                     Array(0, 32, 0, 0, 0, 128), _
+                     Array(False, False, False, False, False, True), _
+                     Array(True, True, True, True, True, False), _
+                     "")
+                     
+    Call CreateTable(surveyDB, _
+                     TABLE_NAME_EXTRA_COLUMNS, _
+                     Array(FIELD_NAME_EXTRA_COLUMN_ID, FIELD_NAME_EXTRA_COLUMN_NAME, FIELD_NAME_EXTRA_COLUMN_TYPE, FIELD_NAME_EXTRA_COLUMN_SIZE), _
+                     Array(dbLong, dbText, dbLong, dbLong), _
+                     Array(0, 32, 0, 0), _
+                     Array(False, False, False, False), _
+                     Array(True, True, True, True), _
+                     FIELD_NAME_EXTRA_COLUMN_ID)
+                     
+End Function
+
+
+
+Private Function DeSerializeFieldInfosAndCreateTable(ByRef surveyDB As DAO.Database, ByVal tableName As String, ByVal fields As String) As String()
+    
+    Dim fieldIndex              As Long
+    Dim fieldCount              As Long
+    
+    Dim fieldNames              As Variant
+    Dim fieldTypes              As Variant
+    Dim fieldSizes              As Variant
+    Dim fieldAllowsZeroLength   As Variant
+    Dim fieldIsRequired         As Variant
+    
+    Dim arrReturn() As String
+    
+    ' Field consists of
+    fieldCount = Len(fields) / FIELD_DSRZ_LENGTH_TOTAL
+    
+    If fieldCount = 0 Then
+        Exit Function
+    End If
+    
+    ReDim fieldNames(fieldCount)
+    ReDim fieldTypes(fieldCount)
+    ReDim fieldSizes(fieldCount)
+    ReDim fieldAllowsZeroLength(fieldCount)
+    ReDim fieldIsRequired(fieldCount)
+    
+    ReDim arrReturn(fieldCount - 1)
+    
+    Dim fieldString As String
+    
+    fieldNames(0) = FIELD_NAME_INTERVIEWEE_ID
+    fieldTypes(0) = dbLong
+    fieldSizes(0) = 0
+    fieldAllowsZeroLength(0) = False
+    fieldIsRequired(0) = True
+    
+    
+    
+    For fieldIndex = 0 To fieldCount - 1
+        arrReturn(fieldIndex) = "INSERT INTO " & TABLE_NAME_EXTRA_COLUMNS & " (" & FIELD_NAME_EXTRA_COLUMN_NAME & ", " & FIELD_NAME_EXTRA_COLUMN_TYPE & ", " & FIELD_NAME_EXTRA_COLUMN_SIZE & ") VALUES ("
+        fieldString = Mid$(fields, fieldIndex * FIELD_DSRZ_LENGTH_TOTAL + 1, FIELD_DSRZ_LENGTH_TOTAL)
+        fieldNames(fieldIndex + 1) = Trim$(Left$(fieldString, FIELD_DSRZ_LENGTH_FIELD_NAME))
+        fieldTypes(fieldIndex + 1) = Int(Mid$(fieldString, FIELD_DSRZ_LENGTH_FIELD_NAME + 1, FIELD_DSRZ_LENGTH_FIELD_TYPE))
+        fieldSizes(fieldIndex + 1) = Int(Mid$(fieldString, FIELD_DSRZ_LENGTH_FIELD_NAME + FIELD_DSRZ_LENGTH_FIELD_TYPE + 1))
+        fieldAllowsZeroLength(fieldIndex + 1) = True
+        fieldIsRequired(fieldIndex + 1) = False
+        arrReturn(fieldIndex) = arrReturn(fieldIndex) & _
+                                "'" & fieldNames(fieldIndex + 1) & "', " & _
+                                fieldTypes(fieldIndex + 1) & ", " & _
+                                fieldSizes(fieldIndex + 1) & ")"
+    Next fieldIndex
+    
+    Call CreateTable(surveyDB, tableName, fieldNames, fieldTypes, fieldSizes, fieldAllowsZeroLength, fieldIsRequired, "")
+    
+    DeSerializeFieldInfosAndCreateTable = arrReturn
+    
+End Function
+

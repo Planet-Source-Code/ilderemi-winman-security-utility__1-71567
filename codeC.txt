@@ -1,0 +1,2692 @@
+/*
+	by Masoud iLDEREMi
+*/
+#include <qtextbrowser.h>
+#include <qdir.h>
+
+#include <qlabel.h>
+
+#include <qapplication.h>
+#include <qpixmap.h>
+#include <qobject.h>
+#include <qpainter.h>
+#include <iostream>
+#include "GUIboard.h"
+#include "Board.h"
+#include <qserversocket.h> 
+#include <qsocket.h>
+#include <qsocketnotifier.h>
+#include <qsocketdevice.h>
+#include <qcursor.h>
+#include <qlayout.h>
+#include <qmainwindow.h>
+#include <qmultilineedit.h> 
+#include <qimage.h>
+#include <qvbuttongroup.h>
+#include <qtextstream.h>
+
+#include <ctime>
+#include <cstdlib>
+#include <stdexcept>
+#include <time.h>
+#include <qsound.h>
+
+#include <math.h>
+
+#include <fstream>
+
+//typedef vector<QString> qstrvec;
+
+#ifdef WINDOWS
+#include <windows.h>
+#endif
+
+#define PORT 33489    // the port users will be connecting to
+
+Board b;
+int curs=0;  // 0=normal; 1=black; 2=white
+
+vector<Move> allblack; //for generate_all_moves
+vector<Move> allwhite;
+
+int PLAYER=0;
+int COMPUTER=1;
+int NETWORK=2;
+int whiteplayer;
+int blackplayer;
+
+int WHITE=0;
+int BLACK=1;
+int turn; //think of white as anti-clockwise and black as clockwise
+
+bool WCOMPLETE=false; //stores whether they have moved a complete move
+bool BCOMPLETE=false;
+bool NEWACCEPTED=false;
+int d1,d2;
+int MOVES;
+
+Move currentmove;
+
+int prevx;
+int prevy;
+QDialog *opt;
+
+GUIBoard* WP=0;
+
+QMainWindow* mainwindow;
+
+GUIBoard::~GUIBoard()
+{
+
+}
+
+GUIBoard::GUIBoard(QWidget *parent, QPushButton* sendtemp, const char *name):QWidget( parent, name ) 
+{
+
+	whiteplayer = PLAYER;
+	blackplayer = COMPUTER;
+
+	ImWhite = true;
+
+	difficulty = tempdifficulty = 3;
+
+	QString arb1 = tr("Yes");
+	QString arb2 = tr("No"); //just so they get into translation lookup
+	
+	currentnick = "player"; //some defaults if, for instance, the file doesn't exist
+	bigdensity = 100;
+	wantedarr[0] = "emptyboard1.png";
+	wantedarr[1] = "light blue-83,152,255.png";
+	wantedarr[2] = "red-255,91,81.png";
+	QFile settings("options.dat"); //do not translate
+	if(settings.exists())
+	{
+		settings.open(IO_ReadOnly);	
+		QTextStream settingsstream(&settings);
+		settingsstream.setEncoding(QTextStream::Unicode);
+		QString tmp;
+		if((tmp = settingsstream.readLine()) != 0)
+			currentnick = tmp;
+		if((tmp = settingsstream.readLine()) != 0)
+		{
+			bigdensity = tmp.toInt();
+			if (bigdensity>200)
+				bigdensity=200;
+			else if (bigdensity<6)
+				bigdensity=6;
+		}
+		if((tmp = settingsstream.readLine()) != 0)
+			wantedarr[0] = tmp;
+		if((tmp = settingsstream.readLine()) != 0)
+			wantedarr[1] = tmp;
+		if((tmp = settingsstream.readLine()) != 0)
+			wantedarr[2] = tmp;
+		while((tmp = settingsstream.readLine()) != 0)
+			connectionlist.append(tmp);
+		settings.close();
+	}
+
+
+	tempdensity=bigdensity;
+
+
+
+	helpview = new QTextView();
+
+	QString helptemp; //read in help file
+	QString temptemp;
+	QFile helpfile(tr("usersmanual.txt"));
+	if(helpfile.exists())
+	{
+		helpfile.open(IO_ReadOnly);	
+		QTextStream helpstream(&helpfile);
+		helpstream.setEncoding(QTextStream::Unicode);
+		while((temptemp = helpstream.readLine()) != 0)
+			helptemp += temptemp;
+		helpfile.close();
+	}
+
+	helpview->setTextFormat(RichText);
+	helpview->setText(helptemp);
+	helpview->setGeometry(100,100,QApplication::desktop()->width()/2,QApplication::desktop()->height()/2);
+	helpview->setCaption(tr("Backgammon Help"));
+	
+	send = sendtemp;
+	connect(send, SIGNAL(clicked()),this,SLOT(sendchat()));
+
+	CONNECTED = SERVER = SERVERWASSET = MUSTSENDNICK = IREQUESTEDNEW = false;
+	//SERVERWASSET is when a general server makes one of the players take the role
+	//of 'server' when it sends the message 'setserver'
+
+	QSOCK = new QSocket(this);
+
+
+	//now set up look and feel options by reading in what image files available
+	//in folders boards, blackpieces, whitepieces
+	tabdialog = new QTabDialog(this,0,true,WStyle_Customize | WStyle_NormalBorder | WStyle_Title | WStyle_SysMenu);
+	tabdialog->setCaption(tr("Look and Feel Options"));
+//	tabdialog->setGeometry(QApplication::desktop()->width()/2-200,QApplication::desktop()->height()/2-120,400,240);
+	tabdialog->setMinimumSize(400,240);
+	connect(tabdialog,SIGNAL(applyButtonPressed()),this,SLOT(applylookslot()));//happens when OK is pressed
+
+	QVButtonGroup* bgrouparr[3];
+
+	QString dirarr[3];
+	dirarr[0] = "boards";
+	dirarr[1] = "whitepieces";
+	dirarr[2] = "blackpieces";
+
+	QString tabname[3];
+	tabname[0] = tr("&Backgrounds");
+	tabname[1] = tr("&Anti-Clockwise piece");
+	tabname[2] = tr("&Clockwise piece");
+
+	
+
+  for(int tabnum=0;tabnum<3;tabnum++) //three tabs, background, white piece, black piece
+  {
+	bgrouparr[tabnum] = new QVButtonGroup(tabdialog);
+
+	QDir d(dirarr[tabnum]); 
+	d.setFilter(QDir::Files);
+    if ( !d.exists() )
+	{
+        QMessageBox::critical(0,QMessageBox::tr(dirarr[tabnum].latin1()),QMessageBox::tr("Error, directory not found, will exit"));
+		exit(1);
+	}
+
+	int index=0;
+
+	int i;
+		for (i=0; i<d.count(); i++ )
+			if(d[i]!="."&&d[i]!="..")
+				optionsarr[tabnum].push_back(d[i]);
+	 
+		bool found = false;
+		
+		 for(i=0;i<optionsarr[tabnum].size();i++)
+			 if(wantedarr[tabnum] == optionsarr[tabnum][i])
+			 {
+				 index=i;
+				 found=true;
+				 break;
+			 }
+		 
+		if(!found)
+		{
+			if(optionsarr[tabnum].size()>0)
+			{
+				wantedarr[tabnum] = optionsarr[tabnum][0];
+				index = 0;
+			}
+			else
+			{
+				QMessageBox::critical(0,QMessageBox::tr("Backgammon"),QMessageBox::tr("No files in boards folder"));
+				exit(1);
+			}
+		}
+	
+
+	for(i=0;i<optionsarr[tabnum].size();i++)
+	{
+		QRadioButton* tmp = new QRadioButton(bgrouparr[tabnum]);
+		QPixmap temp(dirarr[tabnum]+"/"+optionsarr[tabnum][i]);
+		QWMatrix m;                
+		if(tabnum==0) //just scale boards not pieces
+			m.scale(0.1,0.1);                        
+		tmp->setPixmap(temp.xForm(m));
+		radiobuttons[tabnum].push_back(tmp);
+	}
+
+	bgrouparr[tabnum]->setButton(index);
+
+
+	tabdialog->addTab(bgrouparr[tabnum],tabname[tabnum]);
+
+  }
+
+	emptyboard = QPixmap("boards/"+wantedarr[0]);
+
+	white = QPixmap("whitepieces/"+wantedarr[1]);
+	whiteh = QPixmap(wantedarr[1]); //the bear off piece (side view) has the same 
+	//name but is in the current directory
+
+	black = QPixmap("blackpieces/"+wantedarr[2]);
+	blackh = QPixmap(wantedarr[2]);
+
+	forwrd = QPixmap("otherpics/forward.png");
+	bak = QPixmap("otherpics/back.png");
+	start = QPixmap("otherpics/start.png");
+	one = QPixmap("otherpics/one.png");
+	two = QPixmap("otherpics/two.png");
+	three = QPixmap("otherpics/three.png");
+	four = QPixmap("otherpics/four.png");
+	five = QPixmap("otherpics/five.png");
+	six = QPixmap("otherpics/six.png");
+	pass = QPixmap("otherpics/pass.png");  //get the images
+	X = 0;
+	Y = 0;
+	x = X+1;	// to adjust fine positioning of pieces
+	y = Y+0;
+	prevx = X+10;
+	prevy = Y+10;
+	//bigdensity = 20;
+	
+
+	setMouseTracking(true);
+	
+	setMinimumSize( 640+X, 379+Y );
+	setMaximumSize( 640+X, 379+Y );
+	
+	QMenuBar *menu = new QMenuBar(mainwindow);
+
+	gamemenu = new QPopupMenu(this);
+	gamemenu->insertItem(tr("New Game"),this,SLOT(newGame()),Key_F2);
+	gamemenu->insertItem(tr("Options"),this,SLOT(options()),Key_F3);	
+	gamemenu->insertItem(tr("Join Network Game"),this,SLOT(conslot()),Key_F4,2); //has an id of 2
+//	gamemenu->insertItem("Start Personal Server",this,SLOT(serverbuttonslot()),Key_F5,3);
+//	gamemenu->insertItem("Change Direction",this,SLOT(changedirslot()),Key_F6,4);
+	gamemenu->insertItem(tr("Change Direction"),this,SLOT(changedirslot()),Key_F5,3);
+	gamemenu->insertItem(tr("Quit"),qApp,SLOT(quit()),Key_F10);
+
+	helpmenu = new QPopupMenu(this);
+	helpmenu->insertItem(tr("Help File"),this,SLOT(rules()));
+	helpmenu->insertItem(white,tr("About"),this,SLOT(about()));
+	
+	
+	menu->insertItem(tr("&Game"),gamemenu);
+	menu->insertItem(tr("&Help"),helpmenu);
+	menu->show();
+	
+	opt = new QDialog(this,0,true,WStyle_Customize | WStyle_NormalBorder | WStyle_Title | WStyle_SysMenu); //set up options dialog
+	opt->setCaption(tr("Options"));
+	//opt->setGeometry(QApplication::desktop()->width()/2-130,QApplication::desktop()->height()/2-160,260,320);
+	opt->setMinimumSize(240,320);
+	opt->hide();
+
+	gnick = new QButtonGroup(tr("Your name or nickname"),opt);
+	gnick->setGeometry(20,25,220,60);
+	nick = new QLineEdit(gnick);
+	nick->setGeometry(20,20,180,30);
+	nick->setMaxLength(25);
+	nick->setText(currentnick);
+	
+	glookbutton = new QButtonGroup(tr("Style"),opt);
+	glookbutton->setGeometry(20,90,220,60);
+	lookbutton = new QPushButton(glookbutton);
+	lookbutton->setText(tr("Change look and feel"));
+	lookbutton->setGeometry(20,20,180,30);
+	connect(lookbutton, SIGNAL(clicked()),this,SLOT(lookslot()));
+
+	QButtonGroup* gserverbutton = new QButtonGroup(tr("Personal Server"),opt);
+	gserverbutton->setGeometry(20,155,220,60);
+	serverbutton = new QPushButton(gserverbutton);
+	serverbutton->setText(tr("Start Server")); //will be changed if pressed
+	serverbutton->setGeometry(20,20,180,30);
+	connect(serverbutton,SIGNAL(clicked()),this,SLOT(serverbuttonslot()));
+
+	QButtonGroup *anim = new QButtonGroup(tr("Animation speed"),opt);
+	anim->setGeometry(20,220,220,60);
+	slider = new QSlider(QWidget::Horizontal, anim);
+	slider->setGeometry(20,28,180,15);
+    slider->setRange(0, 194);
+    slider->setValue(200-bigdensity);
+    connect(slider, SIGNAL(valueChanged(int)), this, SLOT(setSpeed(int)));
+	
+	QPushButton *ok = new QPushButton(tr("OK"),opt);
+//	ok->setGeometry(60,230,110,30);
+	ok->setGeometry(130,285,110,30);
+	ok->setDefault(true);
+	connect(ok, SIGNAL(clicked()),this,SLOT(oK()));
+	
+//	QPushButton *cancel = new QPushButton("Cancel",opt,"cancel");
+//	cancel->setGeometry(210,230,110,30);
+//	connect(cancel, SIGNAL(clicked()),this,SLOT(canCel()));
+
+	//net stuff
+	connect(QSOCK,SIGNAL(connected()),this,SLOT(qsockconnected()));
+	connect(QSOCK,SIGNAL(readyRead()),this,SLOT(qsockreadyread()));
+	connect(QSOCK,SIGNAL(connectionClosed()),this,SLOT(qsockconnectionclosed()));
+	connect(QSOCK,SIGNAL(error(int)),this,SLOT(qsockerror()));
+
+	QSOCKSERVER = 0;
+
+	qp = 0;
+
+	conversation = "";
+
+}
+
+
+void GUIBoard::animate(int from, int to, bool Black) {
+	/*---------------------------------------------------------------------
+		This method is responsible for the animation of the pieces.
+		It is used for the computer player and in network games.
+		Int from is the number of the triangle the piece is to move
+		from and int to is the number of the triangle the piece is
+		to move to.  Bool black decides whether the animated piece
+		is clockwise or not, black is clockwise in this program
+	---------------------------------------------------------------------*/
+	int startx;
+	int starty;
+	int endx;
+	int endy;
+	int h1=0;
+	int h2=0;
+	if (Black)
+	{		
+		b.fine_adjust(b.current, from ,false,true);	//remove piece from board
+		//find startx and starty
+		if ((from>=1)&&(from<=6))
+		{
+			startx = x+245 + (7-from)*35;
+			starty = y+332;
+		}
+		else if ((from>=7)&&(from<=12))
+		{
+			startx = x-11 + (13-from)*35;
+			starty = y+332;
+		}
+		else if ((from>=13)&&(from<=18))
+		{
+			startx = x-11 + (from-12)*35;
+			starty = y+15;
+		}
+		else if ((from>=19)&&(from<=24))
+		{
+			startx = x+245 + (from-18)*35;
+			starty = y+15;
+		}
+		
+		if (b.current.num[from].black>=4)
+			h1 = 128;
+		else
+			h1 = 32*b.current.num[from].black;
+		if (from>=1&&from<=12)
+			h1 = -h1;
+		
+		if (from==0)
+		{
+			startx = x+240;
+			starty = y+191;
+		}
+		
+		//find endx and endy
+		if ((to>=1)&&(to<=6))
+		{
+			endx = x+245 + (7-to)*35;
+			endy = y+332;
+		}
+		else if ((to>=7)&&(to<=12))
+		{
+			endx = x-11 + (13-to)*35;
+			endy = y+332;
+		}
+		else if ((to>=13)&&(to<=18))
+		{
+			endx = x-11 + (to-12)*35;
+			endy = y+15;
+		}
+		else if ((to>=19)&&(to<=24))
+		{
+			endx = x+245 + (to-18)*35;
+			endy = y+15;
+		}
+		
+		if (b.current.num[to].black>=4)
+		{
+			h2 = 128;
+		}
+		else
+		{
+			h2 = 32*b.current.num[to].black;
+		}
+		if (to==25)
+		{
+			h2 = 6*b.current.num[to].black;
+			endx = x+510;
+			endy = y+17;
+		}
+		if (to>=1&&to<=12)
+			h2 = -h2;
+		 
+		almostfullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&almostfullboard, this);
+		updateBoard();
+		 
+		// now that we know the coordinates of where the black piece starts 
+		// and ends we can animate piece as it moves along its path.
+		int prx = startx;
+		int pry = starty;
+		int density = bigdensity;
+		for (int i=0; i<density; i++) //this is what the slider in options adjusts
+		{	
+			
+			
+			int h = h1*(density-i)/density + h2*i/density;
+			int m = (endx-startx)*i/density;
+			int n = h+(endy-starty)*i/density;
+			if ((starty == endy)||(endy == y+17))
+				if (starty == y+15)
+					n += int((abs(to-from))*20*sin(i*3.14159/density));
+				else
+				{
+					n -= int((abs(to-from))*20*sin(i*3.14159/density));
+				}
+		
+			 
+			fullboard = almostfullboard;
+			if(qp!=0)
+				delete qp;
+			qp = new QPainter(&fullboard, this);
+			qp->drawPixmap(startx+m,starty-Y+n,black,0,0,-1,-1);
+			qp->end();
+			qp->begin(this);
+			if (i<=3)
+				qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+			qp->drawPixmap(-1+prx+X,-1+pry,fullboard,-1+prx,-1+pry-Y,34,34);
+			qp->drawPixmap(-1+startx+X+m,-1+starty+n,fullboard,-1+startx+m,-1+starty-Y+n,34,34);  //repaint board
+			prx = startx+m;
+			pry = starty+n;
+			qp->flush();
+			 
+			#ifdef WINDOWS
+			Sleep(0.9);
+			#endif
+			#ifdef LINUX
+
+						timespec t;
+                        t.tv_sec = 0;
+                        t.tv_nsec = 500000;
+                        nanosleep(&t,NULL);
+
+			#endif
+		}
+		b.fine_adjust(b.current, to ,true,true);  //put piece back
+		 
+		fullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&fullboard, this);
+		updateBoard();
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+		qp->flush(); //for net play
+	 
+		
+	}
+	//------------------------------------------------------------------------------------------------
+	else // if white
+	{
+		b.fine_adjust(b.current, from ,false,false);	//remove piece from board
+		//find startx and starty
+		if ((from>=1)&&(from<=6))
+		{
+			startx = x+245 + (7-from)*35;
+			starty = y+332;
+		}
+		else if ((from>=7)&&(from<=12))
+		{
+			startx = x-11 + (13-from)*35;
+			starty = y+332;
+		}
+		else if ((from>=13)&&(from<=18))
+		{
+			startx = x-11 + (from-12)*35;
+			starty = y+15;
+		}
+		else if ((from>=19)&&(from<=24))
+		{
+			startx = x+245 + (from-18)*35;
+			starty = y+15;
+		}
+		
+		if (b.current.num[from].white>=4)
+			h1 = 128;
+		else
+			h1 = 32*b.current.num[from].white;
+		if (from>=1&&from<=12)
+			h1 = -h1;
+		
+		if (from==25)
+		{
+			startx = x+240;
+			starty = y+158;
+		}
+		
+		//find endx and endy
+		if ((to>=1)&&(to<=6))
+		{
+			endx = x+245 + (7-to)*35;
+			endy = y+332;
+		}
+		else if ((to>=7)&&(to<=12))
+		{
+			endx = x-11 + (13-to)*35;
+			endy = y+332;
+		}
+		else if ((to>=13)&&(to<=18))
+		{
+			endx = x-11 + (to-12)*35;
+			endy = y+15;
+		}
+		else if ((to>=19)&&(to<=24))
+		{
+			endx = x+245 + (to-18)*35;
+			endy = y+15;
+		}
+		
+		if (b.current.num[to].white>=4)
+		{
+			h2 = 128;
+		}
+		else
+		{
+			h2 = 32*b.current.num[to].white;
+		}
+		if (to==0)
+		{
+			h2 = 6*b.current.num[to].white;
+			endx = x+509;
+			endy = y+355;
+		}
+		if (to>=0&&to<=12)
+			h2 = -h2;
+		
+		
+		 
+		almostfullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		int prx = startx;
+		int pry = starty;
+		int density = bigdensity;
+		qp = new QPainter(&almostfullboard, this);
+		updateBoard();
+		
+		// now that we know the coordinates of where the black piece starts 
+		// and ends we can animate piece as it moves along its path.
+		for (int i=0; i<density; i++)
+		{
+			
+			
+			int h = h1*(density-i)/density + h2*i/density;
+			int m = (endx-startx)*i/density;
+			int n = h+(endy-starty)*i/density;
+			
+			if ((starty == endy)||(endy == y+355))
+				if (starty == y+15)
+				{
+					n += int((abs(to-from))*20*sin(i*3.14159/density));
+				}
+				else
+					n -= int((abs(to-from))*20*sin(i*3.14159/density));
+			 
+			fullboard = almostfullboard;
+			if(qp!=0)
+				delete qp;
+			qp = new QPainter(&fullboard, this);
+			qp->drawPixmap(startx+m,starty-Y+n,white,0,0,-1,-1);
+			qp->end();
+			qp->begin(this);
+			if (i<=3)
+				qp->drawPixmap(X,Y,fullboard,0,0,-1,-1); 
+			qp->drawPixmap(-1+prx+X,-1+pry,fullboard,-1+prx,-1+pry-Y,34,34);
+			qp->drawPixmap(-1+startx+X+m,-1+starty+n,fullboard,-1+startx+m,-1+starty-Y+n,34,34);  //repaint board
+			prx = startx+m;
+			pry = starty+n;
+			qp->flush();
+			 
+			#ifdef WINDOWS
+			Sleep(0.9);
+			#endif
+			#ifdef LINUX
+
+			timespec t;
+                        t.tv_sec = 0;
+                        t.tv_nsec = 500000;
+                        nanosleep(&t,NULL);
+
+			#endif
+		}
+		b.fine_adjust(b.current, to ,true,false);  //put piece back
+		 
+		fullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&fullboard, this);
+		updateBoard();
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+		qp->flush();//useful for network play
+		
+	}
+	//-----------------------------------------------------------------------------------------------
+
+}
+
+void GUIBoard::paintEvent(QPaintEvent *e) {
+	/*--------------------------------------------------------------
+		This method repaints everything if necessary.  It is called
+		whenever another application covers this application and
+		uncovers it again.  It is called if this application is
+		minimised and then restored and if it is moved off the
+		screen and back on again.
+	--------------------------------------------------------------*/
+
+	if(qp!=0)
+		delete qp;
+	qp = new QPainter(&fullboard, this);
+	//updateBoard();			
+	qp->end();
+	qp->begin(this);
+	qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+	qp->flush();
+
+}
+
+bool GUIBoard::bearing(bool bl) {
+	/*-----------------------------------------------------------
+		This method returns true if the player	is bearing off.
+		eg: if bl is true, it returns true if black is bearing
+			off.
+			if bl is false, it returns true if white is bearing
+			off.
+			else it returns false.
+	-----------------------------------------------------------*/
+	if(!bl)
+	{
+		int count =0;
+		for(int i = 0 ; i<=6;i++)
+			count += b.current.num[i].white;
+		if (count==15)
+			return true;
+		else return false;
+	}
+	else
+	{
+		int count =0;
+		for(int i=19;i<=25;i++)
+			count +=b.current.num[i].black;
+		if(count==15)
+			return true;
+		else return false;
+	}
+}
+bool GUIBoard::piecesabove(int i) 
+//when bearing off must take further behind ones first, this just checks if there are
+//'further behind' pieces
+{
+	if(i<7 && i>0) //white
+	{
+		for (int x =i+1;x<7;x++)
+			if(b.current.num[x].white>0)
+				return true;
+		return false;
+	}
+	else
+	{
+		for(int x=i-1;x>18;x--)
+			if(b.current.num[x].black>0)
+				return true;
+		return false;
+	}
+}
+bool GUIBoard::validstart(int num,bool bl) 
+//given a triangle number, this method returns whether the player can pick up a piece
+//also used in doMarks
+{
+	if(currentmove.v.size()>0)
+		if (currentmove.v[currentmove.v.size()-1].to == num)
+			return true;//this just allows undoing of a move
+				//note the undo of a move must be done in order
+	if(!bl)
+	{
+		  bool bear = bearing(false);
+		  for (int i=0; i<allwhite.size();i++)
+		  {
+			int move=0;
+			bool start=false;
+			for(int x =0;x<allwhite[i].v.size();x++)
+			{
+
+				if((allwhite[i].v[x].from == num) && (allwhite[i].v[x].done==false) && !(!bear&&allwhite[i].v[x].to==0)&&!(allwhite[i].v[x].to==0 && num!=d1 && num!=d2 && piecesabove(num)))
+					//mustn't have already done it, must get all in bot right before can bear it off,must bear off in right order, take biggest first, unless dice an exact match
+				{
+					if(b.current.num[25].white>0) //handles the bar
+					{
+						if(num==25)
+							start=true;
+					}
+					else
+						start=true;
+				}
+		
+				if(allwhite[i].v[x].done == true)
+					move++;
+			}
+
+			if( move==MOVES && start ) //I have thus far done all the moves in this allwhite[i]
+				return true;
+		  }
+			return false;
+	
+	}
+	else
+	{
+			bool bear = bearing(true);
+		  for (int i=0; i<allblack.size();i++)
+		  {
+			int move=0;
+			bool start=false;
+			for(int x =0;x<allblack[i].v.size();x++)
+			{
+				if((allblack[i].v[x].from == num) && (allblack[i].v[x].done==false)&& !(!bear&&allblack[i].v[x].to==25)&&!(allblack[i].v[x].to==25&&(num!=25-d1&&num!=25-d2)&&piecesabove(num)))
+				{
+					if(b.current.num[0].black>0)
+					{
+						if(num==0)
+							start=true;
+					}
+					else
+					start=true;
+				}
+				if(allblack[i].v[x].done == true)
+					move++;
+			}
+			if( move==MOVES && start )
+				return true;
+		  }
+			return false;
+	}
+
+}
+void GUIBoard::undoDone(bool bl) 
+//if a player undoes a from_to then this must be reflected in allwhite or allblack
+{
+	if(!bl)//white
+	{
+		
+		for (int i=0; i<allwhite.size();i++)
+			for (int x=0; x<allwhite[i].v.size();x++)
+				allwhite[i].v[x].done=false;
+		for(int y = 0;y<currentmove.v.size();y++)
+			updateDone(currentmove.v[y].from,currentmove.v[y].to,false);
+	}
+	else
+	{
+		
+		for (int i=0; i<allblack.size();i++)
+			for (int x=0; x<allblack[i].v.size();x++)
+				allblack[i].v[x].done=false;
+		for(int y = 0;y<currentmove.v.size();y++)
+			updateDone(currentmove.v[y].from,currentmove.v[y].to,true);
+	}
+}
+void GUIBoard::updateDone(int from,int to,bool bl) 
+//updates allwhite or allblack when a from_to has been done
+{
+	if(!bl)
+	{
+		for (int i=0; i<allwhite.size();i++)
+			for (int x=0; x<allwhite[i].v.size();x++)
+				if(allwhite[i].v[x].from == from && allwhite[i].v[x].to == to && allwhite[i].v[x].done==false)
+				{
+					allwhite[i].v[x].done = true;
+					break; //can only do one to each, e.g. if a fromto was 4 to 3 then in each i can only do one 4 to 3
+				}
+	}
+	else
+	{
+		for (int i=0; i<allblack.size();i++)
+			for (int x=0; x<allblack[i].v.size();x++)
+				if(allblack[i].v[x].from == from && allblack[i].v[x].to == to && allblack[i].v[x].done==false)
+				{
+					allblack[i].v[x].done = true;
+					break;
+				}
+		
+	}
+}
+
+
+bool GUIBoard::validstop(int num,int justStart,bool bl,bool justchecking)
+//can the player put a piece down on num
+//justchecking is set to true when this method is used in doMarks
+//otherwise it actually assumes that the player has put the piece down
+{
+	if(num>25 || num<0)
+		return false;
+
+	if (num == justStart)
+		return true;//ie put back where came from
+	else
+	{
+		if(currentmove.v.size()>0)
+			if(currentmove.v[currentmove.v.size()-1].to==justStart&&currentmove.v[currentmove.v.size()-1].from==num )//undoing 
+			{ 
+				if(justchecking) 
+					return true;
+				if(currentmove.v[currentmove.v.size()-1].done==true)
+					//confusing use of done here, it means there was a hit
+				{
+					if(bl)
+					{
+						b.current.num[25].white--; //take off bar
+						b.current.num[justStart].white=1;//and put back
+					}
+					else
+					{
+						b.current.num[0].black--;
+						b.current.num[justStart].black=1;
+					}
+				}
+				
+				vector<from_to>::iterator li = currentmove.v.begin();
+				for(int w = 0; w<currentmove.v.size()-1;w++)
+					li++;
+				currentmove.v.erase(li); //it would be nicer to say v.erase(i)
+				
+				
+				MOVES--;
+				if(WCOMPLETE)
+					WCOMPLETE=false;
+				if(BCOMPLETE)
+					BCOMPLETE=false;
+				if(num>justStart) //white
+					undoDone(false);
+				else 
+					undoDone(true);
+
+
+				return true;
+			} //this just allows the undoing of a move
+			
+		if(!bl)
+		{
+			for(int i=0; i<allwhite.size();i++)
+			{
+				int move=0;
+				for(int x=0; x<allwhite[i].v.size();x++)
+				{
+					if (allwhite[i].v[x].done == true)
+						move++;
+				}
+				if(move==MOVES) //so this move (set of from_tos) is a possibility
+				{
+				for(int x=0; x<allwhite[i].v.size();x++)
+					if ((allwhite[i].v[x].done == false) && (allwhite[i].v[x].from == justStart) && (allwhite[i].v[x].to == num)&&!(allwhite[i].v[x].to==0&&(justStart!=d1&&justStart!=d2)&&piecesabove(justStart)))
+					{
+						if(justchecking) return true;
+						updateDone(justStart,num,false);//all moves get this from_to done to them
+						MOVES++;
+						
+						from_to temp;
+						temp.from=justStart;
+						temp.to=num;
+						if(b.current.num[num].black==1)
+							temp.done=true;//there was a hit
+											//used in undoing
+						currentmove.v.push_back(temp);
+						
+						if(MOVES==allwhite[i].v.size())
+							WCOMPLETE=true;
+
+
+						return true;
+					}
+				}				
+			}
+			return false;
+		}
+		else
+			for(int i=0; i<allblack.size();i++)
+			{
+				int move=0;
+				for(int x=0; x<allblack[i].v.size();x++)
+				{
+					if (allblack[i].v[x].done == true)
+						move++;
+				}
+				if(move==MOVES)
+				{
+				for(int x=0; x<allblack[i].v.size();x++)
+					if ((allblack[i].v[x].done == false) && (allblack[i].v[x].from == justStart) && (allblack[i].v[x].to == num)&&!(allblack[i].v[x].to==25&&(justStart!=25-d1&&justStart!=25-d2)&&piecesabove(justStart)))
+					{
+						if(justchecking) return true;
+						MOVES++;
+						updateDone(justStart,num,true);
+						
+						from_to temp;
+						temp.from=justStart;
+						temp.to=num;
+						if(b.current.num[num].white==1)
+							temp.done=true; //there was a hit
+						currentmove.v.push_back(temp);						
+
+						
+						if(MOVES==allblack[i].v.size())
+							BCOMPLETE=true;
+
+
+						return true;
+					}
+				}				
+			}
+			return false;
+
+
+	}
+}
+
+void GUIBoard::nextTurn(bool bl) 
+{
+
+  if(!finished(true)&&!finished(false))
+  {
+		if(bl)
+			turn=BLACK;
+		else
+			turn=WHITE;
+
+		MOVES=0;
+		d1=rand()%6+1;
+		d2=rand()%6+1;
+	
+		for(int j=0;j<26;j++)
+			b.current.num[j].mark = -1;
+
+		fullboard = emptyboard;
+		if(qp!=0)
+		{
+			delete qp;
+		}
+		qp = new QPainter(&fullboard, this);
+		updateBoard();
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+		qp->flush();
+	 
+		
+		
+		if(CONNECTED)
+		{
+				QString dtemp = "d"+QString::number(d1)+QString::number(d2);
+				if(NEWACCEPTED)
+				{
+					NEWACCEPTED = false;
+					dtemp+="r";
+				}
+				if(MUSTSENDNICK)
+				{
+					dtemp += "nick"+currentnick;
+					MUSTSENDNICK = false;
+				}
+			
+				dtemp += "\n";
+				QSOCK->writeBlock(dtemp,dtemp.length());
+
+		}
+	
+	if(!bl)
+	{
+		Move best;int x;
+		if(whiteplayer==PLAYER)
+		{
+			allwhite = b.generate_moves(d1,d2,false);
+			
+			if(allwhite.size()==0)
+			{
+				
+				 QMessageBox::about( WP, tr("DJ-Backgammon"),tr("no legal move\n"));
+				
+				if(!CONNECTED)
+					goto label2;
+				else
+				{
+					QString nomove = "nomove\n";
+					QSOCK->writeBlock(nomove,nomove.length());
+				}
+			}
+		}
+		else if(whiteplayer == COMPUTER)
+		{
+			allwhite = b.generate_moves(d1,d2,false);
+			if(allwhite.size()==0)
+				goto label2;
+			
+			best = b.bestMove(b.current,allwhite,false,difficulty);
+		
+			for(x =0; x<best.v.size();x++)
+				animate(best.v[x].from, best.v[x].to, false);
+			//-----------------------------------------------------------------------
+			label2: nextTurn(true);
+		}
+		
+	}
+	else
+	{
+		Move best;int x;
+		if(blackplayer==PLAYER)
+		{
+			allblack = b.generate_moves(d1,d2,true);
+			if(allblack.size()==0)
+			{
+				
+				 QMessageBox::about( WP, tr("DJ-Backgammon"),tr("no legal move\n"));
+				
+				if(!CONNECTED)
+					goto label;
+				else
+				{
+					QString nomove = "nomove\n";
+					QSOCK->writeBlock(nomove,nomove.length());
+
+				}
+				
+			}
+		}
+		else if(blackplayer==COMPUTER)
+		{
+			
+			allblack = b.generate_moves(d1,d2,true);
+			
+			if(allblack.size()==0)
+				goto label;
+			
+			best = b.bestMove(b.current,allblack,true,difficulty);
+			
+			
+			//-----------animate------------------------------------------------
+			for(x =0; x<best.v.size();x++)
+				animate(best.v[x].from, best.v[x].to, true);
+			//------------------------------------------------------------------
+			label : nextTurn(false);
+		}
+	}
+  }
+  else
+  {
+	  if((finished(true)&&ImWhite) || (finished(false)&&!ImWhite))
+			QMessageBox::about( WP, tr("DJ-Backgammon"),tr("Game over, you lost\n"));
+	  else
+		  QMessageBox::about(WP,tr("DJ-Backgammon"),tr("Game over, you won!\n"));
+  }
+}
+
+void GUIBoard::doMarks(int xx, int yy) {
+	/*--------------------------------------------------------
+		this method determines which triangles need to be marked.
+		it is called in the mouseMoveEvent() so that the user
+		can mouse over a triangle and see which moves he/she can
+		make.
+	---------------------------------------------------------*/
+	int i = -1; //number of the triangle
+	if ((yy>Y+204)&&(yy<Y+364)) 
+	{
+		for (int j=0; j<6; j++) {
+			if ((xx>X+(23+35*j))&&(xx<X+(58+35*j)))
+				i = 12-j;
+			else if ((xx>X+(279+35*j))&&(xx<X+(314+35*j)))
+				i = 6-j;
+		}
+	}
+	else if ((yy>Y+15)&&(yy<Y+175))
+	{
+		for (int j=0; j<6; j++) {
+			if ((xx>X+(23+35*j))&&(xx<X+(58+35*j)))
+				i = 13+j;
+			else if ((xx>X+(279+35*j))&&(xx<X+(314+35*j)))
+				i = 19+j;
+		}
+	}
+	// Bar
+	if ((xx>X+239)&&(xx<X+274))
+	{
+		if ((yy>Y+191)&&(yy<Y+287))
+			i = 0;
+		else if ((yy>Y+94)&&(yy<Y+190))
+			i = 25;
+	}
+	// Home
+	if ((xx>X+510)&&(xx<X+543))
+	{
+		if ((yy>Y+270)&&(yy<Y+360))
+			i = 0;
+		else if ((yy>Y+17)&&(yy<Y+107))
+			i = 25;
+	}
+
+		for (int j=0; j<=25; j++) 
+					b.current.num[j].mark = -1;
+	//number of the triangle should be i now
+	if (i!=-1)
+	{
+
+
+			int back[2];
+			back[0] = -1;
+			back[1] = -1;
+			int forward[2];
+			forward[0] = -1;
+			forward[1] = -1;
+			if (((turn == BLACK)&&(b.current.num[i].black > 0)&&(validstart(i,true)))||
+				((turn == WHITE)&&(b.current.num[i].white > 0)&&(validstart(i,false)))){
+
+				b.current.num[i].mark = 0;
+				int k = 0;
+				for(int x=i-6;x<i;x++)
+					if(validstop(x,i,(turn==BLACK),true)) // if validstop for whoevers turn it is
+					{
+						if (turn==BLACK) {
+								back[k] = x;
+								k++;
+						}
+						else {
+								forward[k] = x;
+								k++;
+						}
+					}
+			
+				k = 0;
+				for(int q=i+1;q<=i+6;q++)
+					if(validstop(q,i,(turn==BLACK),true)) 
+					{
+						if (turn==BLACK) {
+								forward[k] = q;
+								k++;
+						}
+						else {
+								back[k] = q;
+								k++;
+						}
+					}
+				
+				for (k=0; k<2; k++) 
+				{
+					if (forward[k] != -1)
+						b.current.num[forward[k]].mark = 1;
+					if (back[k] != -1)
+						b.current.num[back[k]].mark = 2;
+				}
+			}			
+				
+			
+	}
+
+				fullboard = emptyboard;
+				delete qp;
+				qp = new QPainter(&fullboard, this);
+				updateBoard();
+				qp->end();
+				qp->begin(this);
+				qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+				qp->flush();
+
+}
+
+void GUIBoard::mousePressEvent(QMouseEvent *e) {
+	
+	/*------------------------------------------------------------------------------
+		This method determines what to do when a mouse button is pressed.
+		eg: if you click on a piece then you must pick it up(if legal)
+	------------------------------------------------------------------------------*/
+	
+
+	if ((blackplayer!=PLAYER && turn==BLACK)||(whiteplayer!=PLAYER && turn==WHITE))
+		return;
+	static int justStart;
+	if (e->button() == QWidget::RightButton)
+	{
+		ok();
+		return;
+	}
+	if (e->button() != QWidget::LeftButton)
+		return;
+	if (e->x()>X+529&&e->x()<X+619&&e->y()>Y+129&&e->y()<Y+249)
+	{
+		ok();
+		return;
+	}
+	int i = -1; //number of the triangle
+	if ((e->y()>Y+204)&&(e->y()<Y+364)) 
+	{
+		for (int j=0; j<6; j++) 
+		{
+			if ((e->x()>X+(23+35*j))&&(e->x()<X+(58+35*j)))
+			{
+				i = 12-j;
+				break;
+			}
+			else 
+				if ((e->x()>X+(279+35*j))&&(e->x()<X+(314+35*j)))
+				{
+					i = 6-j;
+					break;
+				}
+		}
+	}
+	else if ((e->y()>Y+15)&&(e->y()<Y+175))
+	{
+		for (int j=0; j<6; j++) 
+		{
+			if ((e->x()>X+(23+35*j))&&(e->x()<X+(58+35*j)))
+			{
+				i = 13+j;
+				break;
+			}
+			else if ((e->x()>X+(279+35*j))&&(e->x()<X+(314+35*j)))
+			{
+				i = 19+j;
+				break;
+			}
+		}
+	}
+	// Bar
+	if ((e->x()>X+239)&&(e->x()<X+274))
+	{
+		if ((e->y()>Y+191)&&(e->y()<Y+287))
+			i = 0;
+		else if ((e->y()>Y+94)&&(e->y()<Y+190))
+			i = 25;
+	}
+	// Home
+	if ((e->x()>X+510)&&(e->x()<X+543))
+	{
+		if ((e->y()>Y+270)&&(e->y()<Y+360))
+			i = 0;
+		else if ((e->y()>Y+17)&&(e->y()<Y+107))
+			i = 25;
+	}
+	//number of the triangle should be i now
+  if (blackplayer == PLAYER || whiteplayer == PLAYER)
+  { 
+  if (i!=-1)
+  {
+	if (curs==0) 
+	{ //normal
+		  if (turn == BLACK && blackplayer == PLAYER && b.current.num[i].black > 0 && validstart(i,true)) 
+		  {
+			b.fine_adjust(b.current,i,false,true); 
+			
+				curs = 1;
+				setCursor(QCursor(BlankCursor));
+				
+				almostfullboard = emptyboard;
+				if(qp!=0)
+					delete qp;
+				qp = new QPainter(&almostfullboard, this);
+				updateBoard();
+				qp->end();
+				qp->begin(this);
+				qp->drawPixmap(X,Y,almostfullboard,0,0,-1,-1);
+				qp->flush();
+				
+				drawCurs(e->x(),e->y(),true);
+				
+		
+			justStart=i;//so it can be put back on the stack it was from
+		  } 
+		  else 
+		  {
+			  if (turn == WHITE && whiteplayer == PLAYER && b.current.num[i].white > 0 && validstart(i,false)) 
+			  {
+					b.fine_adjust(b.current,i,false,false);
+					
+						curs = 2;
+						setCursor(QCursor(BlankCursor));
+						
+						almostfullboard = emptyboard;
+						if(qp!=0)
+							delete qp;
+						qp = new QPainter(&almostfullboard, this);
+						updateBoard();
+						qp->end();
+						qp->begin(this);
+						qp->drawPixmap(X,Y,almostfullboard,0,0,-1,-1);
+						qp->flush();
+						
+						drawCurs(e->x(),e->y(),false);
+					
+					
+					justStart=i;
+			  }
+		  }
+	}
+	else if (curs==1) { // black
+		if (validstop(i,justStart,true,false)) {
+			b.fine_adjust(b.current,i,true,true);
+			
+			normalCursor();
+			
+			fullboard = emptyboard;
+			if(qp!=0)
+				delete qp;
+			qp = new QPainter(&fullboard, this);
+			updateBoard();
+			qp->end();
+			qp->begin(this);
+			qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+			qp->flush();
+			
+			doMarks(e->x(),e->y());
+		}
+	}
+	else if (curs==2) 
+	{ //white
+		if (validstop(i,justStart,false,false)) 
+		{
+			b.fine_adjust(b.current,i,true,false);
+			
+			normalCursor();
+			
+			fullboard = emptyboard;
+			if(qp!=0)
+				delete qp;
+			qp = new QPainter(&fullboard, this);
+			updateBoard();
+			qp->end();
+			qp->begin(this);
+			qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+			qp->flush();
+			
+			doMarks(e->x(),e->y());
+		}
+	}
+
+  }
+  }
+
+}
+
+void GUIBoard::mouseMoveEvent(QMouseEvent *e) {
+	/*------------------------------------------------------------------------------
+		This method determines what to do when the mouse is moved.
+		eg: if you have picked up a piece then it must be drawn wherever
+			the mouse cursor is.
+	------------------------------------------------------------------------------*/
+	
+	//if ((blackplayer==COMPUTER && turn==BLACK)||(whiteplayer==COMPUTER && turn==WHITE))
+	if ((blackplayer!=PLAYER && turn==BLACK)||(whiteplayer!=PLAYER && turn==WHITE))
+		return;
+//---------------------------------------------------------------
+	
+	if (curs==0) //if no cursor, then do marks
+	{
+		doMarks(e->x(),e->y());
+		return;
+	}
+
+	//otherwise draw a piece where the cursor is, this makes it seem like your cursor
+	//has turned into a piece
+	if (curs==1)		//black
+	{
+			drawCurs(e->x(),e->y(),true);
+	}
+	else if (curs==2)	//white
+	{
+			drawCurs(e->x(),e->y(),false);
+	}
+}
+
+
+
+
+
+bool GUIBoard::finished(bool bl) {
+	if(!bl)
+	{
+		if(b.current.num[0].white==15)
+			return true;
+		else return false;
+	}
+	else
+	{
+		if(b.current.num[25].black==15)
+			return true;
+		else return false;
+	}
+}
+
+
+void GUIBoard::drawCurs(int xx, int yy, bool Black) {
+	/*------------------------------------------------------------------------------
+		This method is called from mouseMoveEvent when a piece has been picked up.
+		It draws the piece where the mouse cursor is.  It also has to "undraw"
+		where the cursor was.
+	------------------------------------------------------------------------------*/
+	
+		fullboard = almostfullboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&fullboard, this);
+		//qp->setRasterOp(XorROP);
+		if (Black)
+			qp->drawPixmap(xx-16-X,yy-16-Y,black,0,0,-1,-1);
+		else // white
+			qp->drawPixmap(xx-16-X,yy-16-Y,white,0,0,-1,-1);
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(+prevx-17,+prevy-17,fullboard,+prevx-17-X,+prevy-17-Y,34,34);
+		prevx = xx;
+		prevy = yy;
+		qp->drawPixmap(+xx-17,+yy-17,fullboard,+xx-17-X,+yy-17-Y,34,34);
+		qp->flush();
+	
+}
+void GUIBoard::drawDice(int done, int dtwo) {
+	/*------------------------------------------------------------------------------
+		This method simply draws the dice and the message to pass the dice
+		when the users turn is over.
+	------------------------------------------------------------------------------*/
+	
+	QPixmap *dice;
+	switch (done) {
+		case 1: dice = &one;
+				break;
+		case 2: dice = &two;
+				break;
+		case 3: dice = &three;
+				break;
+		case 4: dice = &four;
+				break;
+		case 5: dice = &five;
+				break;
+		case 6: dice = &six;
+				break;
+		default: dice = &two; //why not
+	}
+	if (turn==BLACK)
+		qp->drawPixmap(530,130,*dice,0,0,-1,-1);
+	else
+		qp->drawPixmap(530,200,*dice,0,0,-1,-1);
+	switch (dtwo) {
+		case 1: dice = &one;
+				break;
+		case 2: dice = &two;
+				break;
+		case 3: dice = &three;
+				break;
+		case 4: dice = &four;
+				break;
+		case 5: dice = &five;
+				break;
+		case 6: dice = &six;
+				break;
+		default: dice = &four;
+	}
+	if (turn==BLACK) {
+		qp->drawPixmap(570,130,*dice,0,0,-1,-1);
+		if (BCOMPLETE)
+			qp->drawPixmap(532,180,pass,0,0,-1,-1);
+	}
+	else {
+		qp->drawPixmap(570,200,*dice,0,0,-1,-1);
+		if (WCOMPLETE)
+			qp->drawPixmap(532,180,pass,0,0,-1,-1);
+	}
+	qp->flush();
+	
+}
+
+
+void GUIBoard::normalCursor() {
+	// this sets the cursor to the standard arrow
+	// after putting a piece down.
+	
+	setCursor(QCursor(ArrowCursor));
+	curs = 0;
+	
+}
+
+
+
+void GUIBoard::setSpeed(int dens) {
+	// sets animation speed
+	tempdensity = 200-dens;
+}
+
+void GUIBoard::drawPieces(int triangle, bool bl, int num) {
+	/*------------------------------------------------------------------------------
+		This is a very important method!!! It draws all the pieces on the board in
+		the correct places.  It takes in int triangle(the number of the triangle),
+		bool bl(whether the piece is black not), and int num(the number of pieces
+		to draw on the triangle) and it simply draws the correct number of correctly
+		coloured pieces on the correct triangle.  It also draws the markers calculated
+		in the doMarks() method.  drawPieces() is called in updateBoard.
+	------------------------------------------------------------------------------*/
+	
+	QPixmap *piece;
+	QPixmap *pieceh;
+	QPixmap *mark;
+	
+	//drawDice(d1,d2);
+	
+	if (bl)
+	{
+		piece = &black;
+		pieceh = &blackh;
+	}
+	else
+	{
+		piece = &white;
+		pieceh = &whiteh;
+	}
+	if (b.current.num[triangle].mark == 0)
+		mark = &start;
+	else if (b.current.num[triangle].mark == 1)
+		mark = &forwrd;
+	else if (b.current.num[triangle].mark == 2)
+		mark = &bak;
+	
+	for (int i=0; i<num+1; i++) 
+	{
+		int n;
+		if (num<=5)
+			n = i*32;
+		else 
+			n = (i*128/(num-1));
+		int m;
+		if (num<=3)
+			m = i*32;
+		else 
+			m = (i*64/(num-1));
+		if ((triangle<=6)&&(triangle>=1)) 
+		{
+			if(i!=num)
+				qp->drawPixmap(x-X+245+(7-triangle)*35,y-Y+332-n,*piece,0,0,-1,-1);
+			if ((i==0)&&(b.current.num[triangle].mark != -1))
+				qp->drawPixmap(14+245+(7-triangle)*35,368,*mark,0,0,-1,-1);
+		}
+		else if ((triangle<=12)&&(triangle>=7)) 
+		{
+			if(i!=num)
+				qp->drawPixmap(x-X-11+(13-triangle)*35,y-Y+332-n,*piece,0,0,-1,-1);
+			if ((i==0)&&(b.current.num[triangle].mark != -1))
+				qp->drawPixmap(14-11+(13-triangle)*35,368,*mark,0,0,-1,-1);
+		}
+		else if((triangle<=18)&&(triangle>=13)) 
+		{
+			if(i!=num)
+				qp->drawPixmap(x-X-11+(triangle-12)*35,y-Y+15+n,*piece,0,0,-1,-1);
+			if ((i==0)&&(b.current.num[triangle].mark != -1))
+				qp->drawPixmap(14-11+(triangle-12)*35,4,*mark,0,0,-1,-1);
+		}
+		else if((triangle<=24)&&(triangle>=19)) 
+		{
+			if(i!=num)
+				qp->drawPixmap(x-X+245+(triangle-18)*35,y-Y+15+n,*piece,0,0,-1,-1);
+			if ((i==0)&&(b.current.num[triangle].mark != -1))
+				qp->drawPixmap(14+245+(triangle-18)*35,4,*mark,0,0,-1,-1);
+		}
+		else if(triangle==0)
+		{
+			if(bl)
+			{
+				if (i!=num)
+					qp->drawPixmap(x-X+240,y-Y+191+m,*piece,0,0,-1,-1);
+				if ((i==0)&&(b.current.num[triangle].mark == 2))
+					qp->drawPixmap(253,187,*mark,0,0,-1,-1);
+			}
+			else //if white
+			{
+				if (i!=num)
+					qp->drawPixmap(x-X+510,y-Y+355-i*6,*pieceh,0,0,-1,-1);
+				if ((i==0)&&(b.current.num[triangle].mark == 1))
+					qp->drawPixmap(524,368,*mark,0,0,-1,-1);
+			}
+		}
+		else if(triangle==25)
+		{
+			if(!bl)
+			{
+				if (i!=num)
+					qp->drawPixmap(x-X+240,y-Y+158-m,*piece,0,0,-1,-1);
+				if ((i==0)&&(b.current.num[triangle].mark == 2))
+					qp->drawPixmap(253,187,*mark,0,0,-1,-1);
+			}
+			else //if black
+			{
+				if (i!=num)
+					qp->drawPixmap(x-X+510,y-Y+18+i*6,*pieceh,0,0,-1,-1);
+				if ((i==0)&&(b.current.num[triangle].mark == 1))
+					qp->drawPixmap(524,4,*mark,0,0,-1,-1);
+			}
+		}
+	}
+	qp->flush();
+	
+}
+
+
+
+void GUIBoard::updateBoard() {
+	
+	/*------------------------------------------------------------------------------
+		This method redraws the entire board.
+	------------------------------------------------------------------------------*/
+	
+	for (int i=1; i<=24; i++) {
+		drawPieces(i,true,b.current.num[i].black);
+		if(b.current.num[i].white != 0)
+			drawPieces(i,false,b.current.num[i].white);
+	}
+	drawDice(d1,d2);
+	drawPieces(0,true,b.current.num[0].black);
+	drawPieces(0,false,b.current.num[0].white);
+	drawPieces(25,true,b.current.num[25].black);
+	drawPieces(25,false,b.current.num[25].white);
+	
+	
+	if (curs==0) {
+		pips[0] = QString::number(b.pips(b.current, true));
+		pips[1] = QString::number(b.pips(b.current,false));
+	}
+	
+	//now write name and pips in right colour, based on filename of image
+	if(qp!=0)
+	{
+		for(int i=0;i<2;i++)
+		{
+			int coords[3];
+			QString name;
+			qp->setPen(QColor("black")); //just a default
+
+			//now set pen colour and get name
+			QStringList sl = QStringList::split('-',wantedarr[2-i]);
+			if(sl.count()==2)
+			{
+				QStringList::Iterator ite = sl.begin();
+				name = *ite;
+				ite++;
+				QString scoord = (*ite).left((*ite).length()-4);
+				QStringList coordsl = QStringList::split(',',scoord);
+				bool setpenonname = false;
+				if(coordsl.count()==3)
+				{
+					int count = 0;
+					for (QStringList::Iterator it=coordsl.begin(); it!=coordsl.end();++it)
+					{
+						bool ok;
+						coords[count] = (*it).toInt(&ok);
+						if(!ok)
+						{
+							setpenonname = true;
+							break;
+						}
+						count++;
+					}
+					if(!setpenonname)
+						qp->setPen(QColor(coords[0],coords[1],coords[2]));
+				}
+				else
+					setpenonname = true;
+				if(setpenonname)
+					qp->setPen(QColor(name)); //might work, might not, depending on name
+			}
+			else
+			{
+				name = wantedarr[2-i].left(wantedarr[2-i].length()-4);
+				qp->setPen(QColor(name));
+			}
+			//pen colour now set to something, either rgb, name or black and name is set
+
+			//now write name and pips
+			qp->drawText(550,28+i*254, name);
+			qp->drawText(550,48+i*254,tr("Pips:"));
+			qp->drawText(592,48+i*254,pips[i]);
+
+		}
+	}
+	
+}
+
+void GUIBoard::decode_adjust(QString s) { //used to take in a string
+	//from the network, translate this into a move, adjust board and animate
+	Move m;
+	s = s.right(s.length()-1);
+	QStringList sl = QStringList::split("/",s);
+	if(sl.count()%2!=0 || sl.count()==0)
+	{
+		qsockerror();
+		return;
+	}
+	bool from = false;
+	bool ok = true;
+	from_to f;
+	bool oppswhite = false;//test whether the opponent is white based on the direction
+	//of the move we get
+
+	for ( QStringList::Iterator it = sl.begin(); it != sl.end(); ++it ) 
+	{
+		from = !from;
+		if(from)
+			f.from = (*it).toInt(&ok);
+		else
+		{
+			f.to = (*it).toInt(&ok);
+			if(f.to<f.from)
+				oppswhite = true;
+			m.v.push_back(f);
+		}
+		if(!ok)
+		{
+			qsockerror();
+			return;
+		}
+	}
+
+	if(oppswhite)
+	{
+		if(ImWhite)
+			m.reverse();
+	}
+	else
+	{
+		if(!ImWhite)
+			m.reverse();
+	}
+
+	bool found=false;
+	if(!ImWhite) //to test whether we have received a valid move according to our board state
+	{
+		for(int i=0;i<allwhite.size();i++)
+		{
+			if(b.samemove(allwhite[i],m))
+			{
+				found=true;
+				break;
+			}
+		}
+	}
+	else
+		for(int i=0;i<allblack.size();i++)
+			if(b.samemove(allblack[i],m))
+			{
+				found=true;
+				break;
+			}
+	if(!found)
+	{
+		qsockerror();
+		return;
+	}
+	else
+	for(int i =0;i<m.v.size();i++)
+		animate(m.v[i].from,m.v[i].to,ImWhite);
+}
+
+
+void GUIBoard::ok() {  //ie user indicates he has finished a move
+	if(curs != 0)
+		return;
+
+	for (int j=0; j<=25; j++) 
+		b.current.num[j].mark = -1;
+
+	if(turn == BLACK)
+	{
+		if(BCOMPLETE)
+		{
+				
+				
+				if (CONNECTED)
+				{
+					if(!IREQUESTEDNEW)
+					{
+						BCOMPLETE = false;
+						QString s = makestring(currentmove);
+						QSOCK->writeBlock(s,s.length());
+						QSOCK->flush();
+						turn = WHITE;
+						currentmove.v.clear();
+					}
+					//else
+					//	QMessageBox::about( WP, "Notification","Cannot send move, waiting for the response to your new game request\n");
+				}
+				else
+				{
+					BCOMPLETE = false;
+					currentmove.v.clear();
+					nextTurn(false);
+				}
+		}
+		else
+		{
+				
+				 QMessageBox::about( WP, tr("DJ-Backgammon"),tr("You have not done a complete move\n"));
+			
+		}
+	}
+	else
+	{
+		if(WCOMPLETE)
+		{
+			
+			if(CONNECTED)
+			{
+				if(!IREQUESTEDNEW)
+				{
+					WCOMPLETE=false;
+						QString s = makestring(currentmove);
+						QSOCK->writeBlock(s,s.length());
+						QSOCK->flush();
+						turn = BLACK;
+						currentmove.v.clear();
+				}
+		//		else
+		//				QMessageBox::about( WP, "Notification","Cannot send move, waiting for the response to your new game request\n");
+
+			}
+			else
+			{
+				WCOMPLETE=false;
+				currentmove.v.clear();
+				nextTurn(true);
+			}
+		}
+		else
+		{
+				
+				 QMessageBox::about( WP, tr("DJ-Backgammon"),tr("You have not played a complete move\n"));
+					
+		}
+	}
+}
+bool GUIBoard::yesno() {
+	if(!SERVERWASSET)
+	{
+		QMessageBox mb(tr("DJ-Backgammon"),tr("Do you want to quit your current game and start a new network game?"),QMessageBox::NoIcon,QMessageBox::Yes,QMessageBox::No,0,WP);
+		int i =  mb.exec();
+	
+	    if ( i == QMessageBox::Yes )
+			return true;
+		else //if ( i == QMessageBox::No )
+			return false;
+	}
+	else 
+	{
+		QSound::play("chord.wav");
+		setActiveWindow();
+
+		QMessageBox::about(this,tr("DJ-Backgammon"),tr("An opponent has been found - the match will now begin"));
+		
+		SERVERWASSET=false;
+		return true;
+	}
+	
+
+
+}
+/*
+void GUIBoard::hC() {
+	
+	diff->setEnabled(true);
+	
+	temptypeofgame = 1;
+}
+void GUIBoard::hH() {
+	
+	diff->setEnabled(false);
+	
+	temptypeofgame = 2;
+}
+
+
+void GUIBoard::easY() {
+	tempdifficulty = 1;
+}
+
+void GUIBoard::meD() {
+	tempdifficulty = 2;
+}
+
+void GUIBoard::harD() {
+	tempdifficulty = 3;
+}
+*/
+void GUIBoard::conslot() {
+	//-----------------------------------------------------------
+
+  if(!CONNECTED)
+  {
+	bool ok = FALSE;
+	
+	QString text = QInputDialog::getItem(tr("DJ-Backgammon"), tr("Enter the hostname or IP address you would like to connect to"), connectionlist,0,true,&ok, this);
+	
+	if (ok && !text.isEmpty()) 
+	{
+		for ( QStringList::Iterator it = connectionlist.begin(); it != connectionlist.end(); ++it ) 
+		{
+            if(text == (*it).latin1())
+			{
+				connectionlist.remove(*it);
+				break;
+			}
+        }
+		connectionlist.prepend(text);
+
+		QSOCK->connectToHost(text,PORT);
+		
+	}
+  }
+  else //as in click on disconnect
+  {
+		QString s="qm\n";
+		QSOCK->writeBlock(s,s.length());
+		reinstate(); //also closes socket etc
+  }
+
+
+}
+ 
+ void GUIBoard::reinstate()
+ {
+	 
+	 				CONNECTED=false;
+					SERVER=false;									
+					gamemenu->changeItem(2,tr("Join Network Game"));
+					QSOCK->close();
+
+					label->setText('\n'+tr("Opponent: Computer")+'\n');
+					conversation = "";
+					textview->setText("<qt>"+conversation+"</qt>");
+				
+					/*
+			switch(WP->typeofgame)
+			{
+				case 1:whiteplayer=PLAYER;blackplayer=COMPUTER;break;
+				case 2:whiteplayer=PLAYER;blackplayer=PLAYER;break;
+				default : whiteplayer=PLAYER;blackplayer=COMPUTER;
+			}*/
+			if(ImWhite)
+			{
+				whiteplayer=PLAYER;
+				blackplayer=COMPUTER;
+			}
+			else
+			{
+				whiteplayer=COMPUTER;
+				blackplayer=PLAYER;
+			}
+
+			b.reset();
+			currentmove.v.clear();
+			BCOMPLETE = WCOMPLETE = false;
+					
+					WP->fullboard = WP->emptyboard;
+					if(qp!=0)
+						delete qp;
+					qp = new QPainter(&(WP->fullboard), WP);
+					WP->updateBoard();
+					qp->end();
+					qp->begin(WP);
+					qp->drawPixmap(WP->X,WP->Y,WP->fullboard,0,0,-1,-1);
+					qp->flush();
+					
+					
+			if(WP->typeofgame!=3)
+			WP->nextTurn(!ImWhite); //I always get to start against the computer
+ }
+
+
+void GUIBoard::qsockconnected(){
+//I tried to connect to something and I get all excited when this is called because
+//it actually means I got connected to something so I send off my name and the word
+// 'new'. I also allow the opponent to move first since I requested it
+
+	if(!SERVER)
+	{
+		gamemenu->changeItem(2,tr("Disconnect"));
+		CONNECTED=true;
+
+		if(ImWhite)
+		{
+			whiteplayer = PLAYER;//should already be
+			blackplayer = NETWORK;
+			turn = BLACK;
+		}
+		else
+		{
+			blackplayer = PLAYER; //should already be
+			whiteplayer = NETWORK;
+			turn = WHITE;
+		}
+
+		QString s = "newnick"+currentnick+"\n";
+		QSOCK->writeBlock(s,s.length());
+
+		//IREQUESTEDNEW = true;
+
+		b.reset(); 
+		currentmove.v.clear();
+
+		WCOMPLETE = BCOMPLETE = false;
+
+		fullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&fullboard, this);
+		updateBoard();
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+		qp->flush();
+	}
+//	else
+//		QMessageBox::about(WP, "Interrupted", "Already acting as server");
+
+		
+}
+void GUIBoard::qsockconnectionclosed(){
+		if(CONNECTED) //if disconnected through menu disconnect - will already have notified
+		{
+				 QMessageBox::about(WP,tr("DJ-Backgammon"),tr("The connection has been lost\n"));
+				reinstate();
+		}
+}
+void GUIBoard::qsockerror(){
+//	if(CONNECTED)
+//	{
+		QMessageBox::warning(this, tr("DJ-Backgammon"), tr("There has been an error with the connection\n"));
+		reinstate();
+//	}
+}
+void GUIBoard::qsockreadyread()
+{
+	if(QSOCK->canReadLine())
+	{
+		QString s = QSOCK->readLine();
+
+		s = s.left(s.length()-1); //get rid of the newline
+	
+				if(s.left(3)=="new") 
+				{
+					bool alreadycon = CONNECTED;
+					
+					if(yesno())
+					{
+						CONNECTED=true;
+						gamemenu->changeItem(2,tr("Disconnect"));
+						
+						MUSTSENDNICK = true;
+						
+						b.reset();
+						WCOMPLETE = BCOMPLETE = false;
+						currentmove.v.clear();
+						
+						fullboard = emptyboard;
+						if(qp!=0)
+							delete qp;
+						qp = new QPainter(&fullboard, this);
+						updateBoard();
+						qp->end();
+						qp->begin(this);
+						qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+						qp->flush();
+						
+						if(s.mid(3,4)=="nick")
+						{
+							label->setText('\n'+tr("Opponent: ")+s.right(s.length()-7)+"\n");
+						}
+
+						if(alreadycon)
+						{
+							
+							NEWACCEPTED=true;
+						}
+						
+						if(SERVER)
+						{
+							if(ImWhite)
+							{
+								whiteplayer=PLAYER;
+								blackplayer=NETWORK;
+							}
+							else
+							{
+								whiteplayer=NETWORK;
+								blackplayer=PLAYER;
+							}
+						 
+						}
+						else
+						{
+							if(ImWhite)
+							{
+								whiteplayer=PLAYER;
+								blackplayer=NETWORK;
+							}
+							else
+							{
+								whiteplayer=NETWORK;
+								blackplayer=PLAYER;
+							}
+						}
+						
+						nextTurn(!ImWhite); //I accepted so it's my turn
+
+					}
+					else //I said no
+					{
+						QString st;
+						if(alreadycon)
+						{
+							st="r0\n"; //new request failed ie 0
+							QSOCK->writeBlock(st,st.length());
+						}
+						else //said I didn't want to start a network game
+						{
+						    st="q\n";
+							QSOCK->writeBlock(st,st.length());
+							QSOCK->close();
+							SERVER = false;
+						}
+					}
+
+				}
+				else
+			if(CONNECTED) //I only accept these if I am already CONNECTED
+			{
+				if( s.left(1)=="d" && s.length()>2 )
+				{
+					bool ok = true;
+					d1 = s.mid(1,1).toInt(&ok);
+					if(!ok||d1<1||d1>6)
+						qsockerror();
+					else
+					{
+						d2 = s.mid(2,1).toInt(&ok);
+						if(!ok||d2<1||d2>6)
+							qsockerror();
+						else
+						{
+
+								if(s.length()>3)
+								{
+									if(s[3] == 'r') //our request for a new game was accepted
+									{
+										if(IREQUESTEDNEW)
+										{
+										//	QMessageBox::about( WP, "Notification","request for new game was accepted\n");
+
+											IREQUESTEDNEW = false;
+
+											WCOMPLETE = BCOMPLETE = false;
+											currentmove.v.clear();
+
+											b.reset();
+											if(ImWhite)
+												turn = BLACK;
+											else
+												turn = WHITE;
+											//I sent the request for a new game, he accepted, so he gets to play first
+
+										}
+										if(s.mid(4,4)=="nick")
+												label->setText('\n'+tr("Opponent: ")+s.right(s.length()-8)+"\n");
+										
+									}
+									else
+									{
+										if(s.mid(3,4)=="nick")
+										{
+											label->setText('\n'+tr("Opponent: ")+s.right(s.length()-7)+"\n");
+										}
+											
+									}
+								}
+									
+									fullboard = emptyboard;
+									if(qp!=0)
+										delete qp;
+									qp = new QPainter(&fullboard, this);
+									updateBoard();
+									qp->end();
+									qp->begin(this);
+									qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+									qp->flush();
+						
+									//gen moves for opp so when we get his move, we can
+									//check whether it is valid
+										if(ImWhite)
+											allblack=b.generate_moves(d1,d2,true);
+										else
+											allwhite=b.generate_moves(d1,d2,false);
+								
+
+						}
+					}
+	
+					
+
+					
+					
+				} 
+				else
+				if(s[0]=='m')
+				{
+					decode_adjust(s);
+					nextTurn(!ImWhite); //it's my turn now
+				} 
+				else
+				if(s=="nomove")
+				{
+						
+					 QMessageBox::about( this,tr("DJ-Backgammon"),tr("Opponent had no legal moves\n"));
+					 nextTurn(!ImWhite); //it's my turn
+				} 
+				else
+				if(s=="qm")
+				{
+					CONNECTED=false; // just so we don't display "connection has been lost" when socket closed
+					QMessageBox::about(WP,tr("DJ-Backgammon"),tr("Your opponent has disconnected"));
+					QSOCK->close(); 
+					reinstate(); 
+				}
+				else
+				if(s[0]=='q') //told to bugger off - doesn't clash with qm above
+				{				
+					QMessageBox::about(WP, tr("DJ-Backgammon"),tr("The connection has been refused\n"));
+					reinstate();
+				} 
+				else
+				
+				if(s[0]=='r') //we sent a request for a new game and this is the reply
+				{
+					if(s[1]=='0') 
+					{
+						IREQUESTEDNEW = false;
+						QMessageBox::about( WP, tr("DJ-Backgammon"),tr("Request for new game was rejected\n"));
+						
+					}
+				/*	else
+					{
+						b.reset();
+						
+						/*fullboard = emptyboard;
+						delete qp;
+						qp = new QPainter(&fullboard, this);
+						updateBoard();
+						qp->end();
+						qp->begin(this);
+						qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+						qp->flush();
+						
+						if(SERVER)
+							turn = BLACK;
+						else
+							turn = WHITE;
+						
+					}*/
+				}
+				else
+					if(s=="setserver")
+					{
+						SERVERWASSET=true;
+						SERVER=true;
+					//	MUSTSENDNICK = true;
+					}
+				else
+					if(s=="sorry") //not actually used yet
+					{
+						QMessageBox::about(this,tr("DJ-Backgammon"),tr("Sorry, the server already has the maximum number of connections"));
+						reinstate();
+					}
+				else
+					if(s.left(4)=="chat")
+					{
+						//strip the <> or they can change stuff like font ...
+						//I strip it because it might be invalid and then it'll stuff things up
+						QString line = s.right(s.length()-4);
+						for(int i=0;i<line.length();i++)
+							if(line[i]=='<' || line[i]=='>')
+								line[i] = '/';
+						
+						line = "<p><font color=\"red\">"+line+"</font></p>";
+						conversation = line + conversation;
+						textview->setText("<qt>"+conversation+"</qt>");
+					}
+			}
+				
+		
+	}
+}
+
+QString GUIBoard::makestring(Move m){			
+	QString s="m";
+	for(int i=0;i<m.v.size();i++)
+	{
+		s+=QString::number(m.v[i].from)+"/"+QString::number(m.v[i].to)+"/";
+	}
+	s+="\n";
+	return s;
+}
+
+void GUIBoard::oK() { //with regard to options 
+
+	bigdensity = tempdensity;
+	currentnick = nick->text();
+
+		opt->hide();
+			WP->fullboard = WP->emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&(WP->fullboard), WP);
+		WP->updateBoard();
+		qp->end();
+		qp->begin(WP);
+		qp->drawPixmap(WP->X,WP->Y,WP->fullboard,0,0,-1,-1);
+		qp->flush();
+		WP->normalCursor();
+
+
+}
+
+void GUIBoard::newGame() {
+	if(CONNECTED)
+	{
+			IREQUESTEDNEW = true;
+			QString s="new\n";
+			QSOCK->writeBlock(s,s.length());
+			return;
+	}
+
+
+			b.reset();
+	
+		WP->typeofgame=WP->temptypeofgame; //this section is for oK
+		WP->difficulty=WP->tempdifficulty;		
+		
+		opt->hide();
+		WP->normalCursor();
+		
+	
+	
+	WP->fullboard = WP->emptyboard;
+	if(qp!=0)
+		delete qp;
+	qp = new QPainter(&(WP->fullboard), WP);
+	WP->updateBoard();
+	qp->end();
+	qp->begin(WP);
+	qp->drawPixmap(WP->X,WP->Y,WP->fullboard,0,0,-1,-1);
+	qp->flush();
+	WP->normalCursor();
+	
+	WCOMPLETE = BCOMPLETE = false;
+
+	nextTurn(!ImWhite); //I go first
+
+}
+void GUIBoard::options() {
+	
+	opt->show();
+	
+}
+
+void GUIBoard::rules() {
+	helpview->show();
+
+}
+void GUIBoard::about() {
+	
+	 QMessageBox::about( this, tr("About DJ-Backgammon"),
+				   tr("Written by John Corlett and David le Roux using QT\n"
+					  "Mail bug reports and suggestions to mataav@yahoo.co.uk\n"
+					  "Licensed under the GPL (see gpl.txt) \n"
+					  "Dice pictures courtesy of the GNOME project\n\n"
+					  "Homepage: http://sourceforge.net/projects/djbackgammon"));
+	
+}
+void GUIBoard::sendchat()
+{
+	if(CONNECTED)
+	{
+		QString line = lineedit->text();
+		if(line.length()>0)
+		{
+			lineedit->setText("");
+
+			QString tmp = "chat"+line+"\n";
+			QSOCK->writeBlock(tmp,tmp.length());
+
+			//strip the <> to prevent invalid stuff messing things up
+			for(int i=0;i<line.length();i++)
+				if(line[i]=='<' || line[i]=='>')
+					line[i] = '/';
+			
+			line = "<p><font color=\"black\">"+line+"</font></p>";
+			conversation = line + conversation;
+			textview->setText("<qt>"+conversation+"</qt>");
+		}
+	}
+}
+
+void GUIBoard::serverbuttonslot()
+{
+	
+	static bool writestop = false; //write stop on button
+	writestop = !writestop;
+
+	if(writestop)
+	{
+		QSOCKSERVER = new QSockServer(PORT,2,this,&CONNECTED,&SERVER,QSOCK);
+		if(!QSOCKSERVER->ok())
+		{
+		#ifdef WINDOWS
+				
+					QSound::play("chord.wav");
+		#endif
+					writestop = false;
+					delete QSOCKSERVER;
+		}
+		if(writestop)
+			serverbutton->setText(tr("Stop Server"));
+		//	gamemenu->changeItem(3,"Stop Personal Server");
+		
+	}
+	else
+	{
+		serverbutton->setText(tr("Start Server"));
+	//	gamemenu->changeItem(3,"Start Personal Server");
+		//CONNECTED = false;
+		//SERVER = false;
+		//QSOCK.close();
+		if(CONNECTED || SERVER)
+		{
+			reinstate();
+		}
+		if(QSOCKSERVER != 0) //shouldn't be
+			delete QSOCKSERVER;
+	}
+
+}
+void GUIBoard::changedirslot()
+{
+	if(curs!=0)
+		return;
+
+	if(turn==WHITE)
+	{
+		turn=BLACK;
+		for(int i=0;i<allwhite.size();i++)
+			allwhite[i].reverse();
+		allblack = allwhite;
+	}
+	else
+	{
+		turn=WHITE;
+		for(int i=0;i<allblack.size();i++)
+			allblack[i].reverse();
+		allwhite = allblack;
+	}
+
+	ImWhite = !ImWhite;
+
+	int tmp = whiteplayer;
+	whiteplayer = blackplayer;
+	blackplayer = tmp;
+
+	bool tmp2 = WCOMPLETE;
+	WCOMPLETE = BCOMPLETE;
+	BCOMPLETE = tmp2;
+
+	for(int i=0;i<13;i++)
+	{
+		Triangle tmp = b.current.num[i];
+		b.current.num[i].white = b.current.num[25-i].black;
+		b.current.num[i].black = b.current.num[25-i].white;
+		b.current.num[i].mark = b.current.num[25-i].mark;
+
+		b.current.num[25-i].black = tmp.white;
+		b.current.num[25-i].white = tmp.black;
+		b.current.num[25-i].mark = tmp.mark;
+	
+	}
+
+
+	currentmove.reverse();
+
+		fullboard = emptyboard;
+		if(qp!=0)
+			delete qp;
+		qp = new QPainter(&fullboard, this);
+		updateBoard();
+		qp->end();
+		qp->begin(this);
+		qp->drawPixmap(X,Y,fullboard,0,0,-1,-1);
+		qp->flush(); 
+
+} 
+void GUIBoard::applylookslot()
+{
+	for(int i=0;i<3;i++)
+	{
+		for(int x = 0;x<radiobuttons[i].size();x++)
+		{
+			if(radiobuttons[i][x]->isChecked())
+			{
+				wantedarr[i] = optionsarr[i][x];
+				break;
+			}
+		}
+	}
+	emptyboard = QPixmap("boards/"+wantedarr[0]);
+
+	white = QPixmap("whitepieces/"+wantedarr[1]);
+	whiteh = QPixmap(wantedarr[1]);
+
+	black = QPixmap("blackpieces/"+wantedarr[2]);
+	blackh = QPixmap(wantedarr[2]);
+
+}
+void GUIBoard::lookslot()
+{
+	tabdialog->show();
+}
+class MyQMainWindow: public QMainWindow
+{
+	public :
+		MyQMainWindow():QMainWindow()
+		{
+			
+		}
+		void closeEvent(QCloseEvent* e)
+		{
+			if(WP!=0)
+			{
+
+					QFile settings("options.dat"); //do not translate these
+					settings.open(IO_WriteOnly);	
+					QTextStream settingsstream(&settings);
+					settingsstream.setEncoding(QTextStream::Unicode);
+					settingsstream << WP->currentnick << endl;
+					settingsstream << WP->bigdensity << endl;
+					settingsstream << WP->wantedarr[0] << endl;
+					settingsstream << WP->wantedarr[1] << endl;
+					settingsstream << WP->wantedarr[2] << endl;
+					for ( QStringList::Iterator it = WP->connectionlist.begin(); it != WP->connectionlist.end(); ++it ) 
+					{
+						settingsstream << (*it) << endl;
+					}
+					settings.close();
+			}
+			e->accept();
+		}
+};
+
+int main( int argc, char **argv ) {	
+
+	srand(time(0)); //seeds the random, now just call rand()%6 + 1
+	d1=rand()%6+1;
+	d2=rand()%6+1; //paint event might be received early, before dice have values
+
+    QApplication app( argc, argv );               // application object
+
+
+	QTranslator tor(0);
+	tor.load("djbackgammon_breton.qm", ".");
+	app.installTranslator(&tor);
+
+	//QMainWindow* 
+	mainwindow = new MyQMainWindow();
+	mainwindow->setCaption("DJ-Backgammon");
+//	mainwindow
+	mainwindow->setGeometry(QApplication::desktop()->width()/2-320,QApplication::desktop()->height()/2-250,640,500);
+
+
+	QWidget* bgwidget = new QWidget(mainwindow);
+
+	QWidget* horiz = new QWidget(bgwidget);
+
+	QPushButton* sendtemp = new QPushButton(QPushButton::tr("Send"),horiz);
+	sendtemp->setDefault(true); //so that enter can just be pressed
+	sendtemp->setAccel(Qt::Key_Return);
+
+	GUIBoard w(bgwidget,sendtemp);
+	WP = &w;
+//	w.setFixedSize(640,480);
+
+	//QLabel* 
+	w.label = new QLabel(bgwidget);
+	w.label->setText('\n'+QLabel::tr("Opponent: Computer")+'\n');
+
+	//QTextView* 
+	w.textview = new QTextView(bgwidget);
+	w.textview->setTextFormat(QTextView::RichText);
+	w.textview->setFocusPolicy(QWidget::NoFocus);
+	
+
+	//QLineEdit* 
+	w.lineedit = new QLineEdit(horiz);
+	w.lineedit->setMaxLength(100);
+	w.lineedit->setFocus();
+	
+	
+	QBoxLayout* hl = new QHBoxLayout(horiz);
+	hl->addWidget(w.lineedit);
+	hl->addWidget(w.send);
+
+	 QBoxLayout * l = new QVBoxLayout(bgwidget);
+
+     l->addWidget(&w);
+	 l->addWidget(w.label);
+	 l->addWidget(horiz);
+     l->addWidget(w.textview);
+
+	app.setMainWidget(mainwindow);
+	mainwindow->setCentralWidget(bgwidget);
+
+	mainwindow->show();
+	
+	w.nextTurn(false); 
+
+    return app.exec();
+	
+}
